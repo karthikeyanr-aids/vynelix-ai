@@ -1,7 +1,6 @@
-
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, sum, when, regexp_extract, concat_ws, trim, datediff
+    col, sum, when, regexp_extract, concat_ws, trim, datediff, avg
 )
 
 spark = SparkSession.builder \
@@ -127,8 +126,22 @@ df = df.withColumn(
         col("discharge_date").isNotNull() &
         (col("discharge_date") >= col("admission_date")),
         datediff(col("discharge_date"), col("admission_date"))
-    ).otherwise(None).cast("integer")
+    )
 )
+df = df.withColumn(
+    "date_status",
+    when(
+        col("admission_date").isNull() |
+        col("discharge_date").isNull(),
+        "Missing Date"
+    )
+    .when(
+        col("discharge_date") < col("admission_date"),
+        "Invalid Date"
+    )
+    .otherwise("Valid Date")
+)
+
 
 df = df.withColumn(
     "bill_category",
@@ -152,27 +165,168 @@ df.printSchema()
 print("Total Rows:", df.count())
 print("Total Columns:", len(df.columns))
 
-print("Age Group Validation:")
-df.groupBy("age_group").count().show()
+print("Date Status Details:")
+df.select(
+    "patient_id",
+    "admission_date",
+    "discharge_date",
+    "stay_days",
+    "date_status"
+).filter(
+    col("date_status") != "Valid Date"
+).show(20, truncate=False)
 
-print("Bill Category Validation:")
-df.groupBy("bill_category").count().show()
-
-print("Patient Status Validation:")
-df.groupBy("patient_status").count().show()
-
-print("Invalid Stay Days:")
-df.filter(col("stay_days") < 0).show()
+print("Invalid Date Records:")
+df.filter(
+    col("admission_date").isNotNull() &
+    col("discharge_date").isNotNull() &
+    (col("discharge_date") < col("admission_date"))
+).select(
+    "patient_id", "admission_date", "discharge_date"
+).show()
 
 print("Missing Values in Derived Columns:")
 df.select([
     sum(when(col(c).isNull(), 1).otherwise(0)).alias(c)
     for c in ["age_group", "full_name", "stay_days",
-              "bill_category", "patient_status"]
+              "bill_category", "patient_status","date_status"]
 ]).show()
 
 print("Duplicate Rows:", df.count() - df.dropDuplicates().count())
 
 df.toPandas().to_csv("healthcare_transformed.csv", index=False)
 
+print("\nDATA ANALYSIS\n")
+
+print("1. Patient Count by Department:")
+df.groupBy("department") \
+    .count() \
+    .orderBy(col("count").desc()) \
+    .show()
+
+print("2. Patient Count by Gender:")
+df.groupBy("gender") \
+    .count() \
+    .orderBy(col("count").desc()) \
+    .show()
+
+print("3. Patient Count by Age Group:")
+df.groupBy("age_group") \
+    .count() \
+    .orderBy(col("count").desc()) \
+    .show()
+
+print("4. Total Bill by Department:")
+df.groupBy("department") \
+    .sum("bill_amount") \
+    .orderBy(col("sum(bill_amount)").desc()) \
+    .show()
+
+print("5. Average Bill by Department:")
+df.groupBy("department") \
+    .avg("bill_amount") \
+    .orderBy(col("avg(bill_amount)").desc()) \
+    .show()
+
+print("6. Minimum Bill by Department:")
+df.groupBy("department") \
+    .min("bill_amount") \
+    .orderBy(col("min(bill_amount)").asc()) \
+    .show()
+
+print("7. Maximum Bill by Department:")
+df.groupBy("department") \
+    .max("bill_amount") \
+    .orderBy(col("max(bill_amount)").desc()) \
+    .show()
+
+print("8. Patient Count by Status:")
+df.groupBy("status") \
+    .count() \
+    .orderBy(col("count").desc()) \
+    .show()
+
+print("9. Average Hospital Stay by Department:")
+df.groupBy("department") \
+    .avg("stay_days") \
+    .orderBy(col("avg(stay_days)").desc()) \
+    .show()
+
+print("10. High Bill Patients:")
+df.filter(
+    col("bill_amount") >= 150000
+).select(
+    "patient_id",
+    "department",
+    "bill_amount",
+    "status"
+).orderBy(
+    col("bill_amount").desc()
+).show(20)
+
+print("11. Patients Above 60:")
+df.filter(
+    col("age") >= 60
+).select(
+    "patient_id",
+    "age",
+    "department",
+    "diagnosis"
+).orderBy(
+    col("age").desc()
+).show(20)
+
+print("12. Date Status:")
+df.groupBy("date_status") \
+    .count() \
+    .orderBy(col("count").desc()) \
+    .show()
+
+print("13. Before and After Cleaning:")
+
+original_df = spark.read.csv(
+    "healthcare_data.csv",
+    header=True,
+    inferSchema=True
+)
+
+print("Rows Before Cleaning:", original_df.count())
+print("Rows After Cleaning:", df.count())
+
+print(
+    "Duplicates Before Cleaning:",
+    original_df.count() - original_df.dropDuplicates().count()
+)
+
+print(
+    "Duplicates After Cleaning:",
+    df.count() - df.dropDuplicates().count()
+)
+
+print("Average Age Before Cleaning:")
+original_df.select(
+    avg("age").alias("average_age")
+).show()
+
+print("Average Age After Cleaning:")
+df.select(
+    avg("age").alias("average_age")
+).show()
+
+print("Average Bill Before Cleaning:")
+original_df.select(
+    avg("bill_amount").alias("average_bill")
+).show()
+
+print("Average Bill After Cleaning:")
+df.select(
+    avg("bill_amount").alias("average_bill")
+).show()
+
+df.toPandas().to_csv(
+    "healthcare_final_processed.csv",
+    index=False
+)
+
+print("Final dataset saved successfully")
 spark.stop()
